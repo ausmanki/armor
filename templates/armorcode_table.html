@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ArmorCode Data</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 80%;
+            margin: 20px auto;
+        }
+        th,
+        td {
+            border: 1px solid black;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>ArmorCode Products</h1>
+    <table>
+        <thead>
+            {% if products and products|length > 0 %}
+            <tr>
+                {% for key in products[0].keys() %}
+                <th>{{ key }}</th>
+                {% endfor %}
+            </tr>
+            {% endif %}
+        </thead>
+        <tbody>
+            {% for product in products %}
+            <tr>
+                {% if products[0] %}
+                    {% for key in products[0].keys() %}
+                        <td>{{ product.get(key, '') }}</td>
+                    {% endfor %}
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h1>ArmorCode Findings</h1>
+    <label for="sourceFilter">Filter by Source:</label>
+    <input type="text" id="sourceFilter" name="source" value="{{ request.query_params.get('source', '') }}">
+    <button onclick="applyFilter()">Apply Filter</button>
+
+    <div id="findingsContainer">
+        </div>
+
+    <script>
+        const findingsContainer = document.getElementById('findingsContainer');
+        let seenFindingKeys = new Set();
+        let currentPage = 1;
+        const pageSize = 20; // Or whatever page size you are using
+
+        async function fetchAndDisplayFindings(page) {
+            const url = `/findings?page=${page}&page_size=${pageSize}`; // Pass page and page_size
+            const response = await fetch(url);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let partialChunk = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+
+                const chunk = decoder.decode(value, { stream: true });
+                partialChunk += chunk;
+
+                let startIndex = 0;
+                let endIndex;
+                while ((endIndex = partialChunk.indexOf('\n', startIndex)) !== -1) {
+                    const jsonString = partialChunk.substring(startIndex, endIndex);
+                    try {
+                        const findingsPage = JSON.parse(jsonString);
+                        displayFindingsPage(findingsPage);
+                    } catch (error) {
+                        console.error("Error parsing JSON chunk:", error, jsonString);
+                    }
+                    startIndex = endIndex + 1;
+                }
+                partialChunk = partialChunk.substring(startIndex);
+            }
+        }
+
+        function displayFindingsPage(findingsPage) {
+            const table = document.createElement('table');
+            const thead = table.createTHead();
+            const tbody = table.createTBody();
+            let headerRowCreated = false;
+
+            findingsPage.forEach(finding => {
+                const cve = finding.cve;
+                const title = finding.title;
+                const key = cve + title;
+
+                if (cve && title && !seenFindingKeys.has(key)) {
+                    seenFindingKeys.add(key);
+
+                    if (!headerRowCreated) {
+                        const headerRow = thead.insertRow();
+                        for (const key in finding) {
+                            if (finding.hasOwnProperty(key)) {
+                                const th = document.createElement('th');
+                                th.textContent = key;
+                                headerRow.appendChild(th);
+                            }
+                        }
+                        headerRowCreated = true;
+                    }
+
+                    const row = tbody.insertRow();
+                    for (const key in finding) {
+                        if (finding.hasOwnProperty(key)) {
+                            const cell = row.insertCell();
+                            cell.textContent = finding[key];
+                        }
+                    }
+                }
+            });
+
+            if (table.rows.length > 0) {
+                findingsContainer.appendChild(table);
+            }
+            //add load more button
+            if (findingsPage.length === pageSize){
+              const loadMoreButton = document.createElement('button');
+              loadMoreButton.textContent = 'Load More';
+              loadMoreButton.onclick = () => {
+                currentPage++;
+                fetchAndDisplayFindings(currentPage);
+                loadMoreButton.remove();
+              };
+              findingsContainer.appendChild(loadMoreButton);
+            }
+
+        }
+
+        function applyFilter() {
+            var source = document.getElementById('sourceFilter').value;
+            var currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.set('source', source);
+            window.location.href = currentUrl.toString();
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchAndDisplayFindings(currentPage);
+        });
+    </script>
+</body>
+</html>

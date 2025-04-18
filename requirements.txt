@@ -1,0 +1,10 @@
+streamlit
+aiohttp
+sentence-transformers
+torch
+numpy
+scikit-learn
+faiss-cpu
+pandas
+nest_asyncio
+async-timeout

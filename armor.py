@@ -1,4 +1,6 @@
-# --- Imports ---
+# Final updated and corrected script that fixes the scanType list issue, ready to display to the user.
+# The script will be provided in text form due to its length and formatting.
+
 import streamlit as st
 import asyncio
 import aiohttp
@@ -7,7 +9,7 @@ from pathlib import Path
 from io import BytesIO
 import matplotlib.pyplot as plt
 from collections import Counter
-from itertools import groupby
+from fuzzywuzzy import fuzz
 
 # --- API Client ---
 class ArmorCodeClient:
@@ -35,7 +37,7 @@ class ArmorCodeClient:
     async def close(self):
         await self.session.close()
 
-# --- Utility Functions ---
+# --- Utilities ---
 def get_api_key():
     return Path(__file__).parent.joinpath("ArmorCode_API_key.txt").read_text().strip()
 
@@ -62,17 +64,20 @@ def deduplicate_findings(findings, strategy):
     seen = set()
     deduped, duplicates = [], []
     for f in findings:
+        title = f.get("title") or ""
+        comp = f.get("componentName") or ""
+        version = f.get("componentVersion") or ""
+        product = f.get("product") or ""
+        category = f.get("category") or ""
+        scan_raw = f.get("scanType")
+        scan = ", ".join(scan_raw) if isinstance(scan_raw, list) else (scan_raw or "")
+
         key = {
-            "Component-based": (
-                f["title"].lower(), f["componentName"].lower(), f["componentVersion"].lower()
-            ),
-            "Title-based": f["title"].lower(),
-            "CVE-based": tuple(sorted(f["cve"])),
-            "Custom": (
-                f["product"].lower(), f["scanType"].lower(),
-                f["category"].lower(), f["title"].lower()
-            )
-        }.get(strategy, f["title"].lower())
+            "Component-based": (title.lower(), comp.lower(), version.lower()),
+            "Title-based": title.lower(),
+            "CVE-based": tuple(sorted(f.get("cve") or [])),
+            "Custom": (product.lower(), scan.lower(), category.lower(), title.lower())
+        }.get(strategy, title.lower())
 
         f["is_duplicate"] = key in seen
         (duplicates if f["is_duplicate"] else deduped).append(f)
@@ -121,11 +126,33 @@ async def fetch_all_findings(user_filters=None, max_results=10000, size=100):
 def fetch_all_findings_sync(filters=None):
     return asyncio.run(fetch_all_findings(filters))
 
-# --- Grouping Logic ---
-def group_by_fields(findings, fields):
-    df = pd.DataFrame(findings)
-    grouped = df.groupby(fields).size().reset_index(name="count")
-    return grouped
+# --- Fuzzy Grouping ---
+def fuzzy_group_findings(findings, threshold=85):
+    clustered = []
+    remaining = findings.copy()
+    while remaining:
+        base = remaining.pop(0)
+        group = [base]
+        to_remove = []
+        for other in remaining:
+            score = (
+                fuzz.partial_ratio(base['title'], other['title']) +
+                fuzz.partial_ratio(base['componentName'], other['componentName']) +
+                fuzz.partial_ratio(base['componentVersion'], other['componentVersion'])
+            ) / 3
+            if score >= threshold:
+                group.append(other)
+                to_remove.append(other)
+        for item in to_remove:
+            remaining.remove(item)
+        clustered.append({
+            "group_key": base["title"],
+            "title": base["title"],
+            "componentName": base["componentName"],
+            "componentVersion": base["componentVersion"],
+            "groupSize": len(group)
+        })
+    return pd.DataFrame(clustered)
 
 # --- Dashboard ---
 def run_dashboard():
@@ -135,36 +162,40 @@ def run_dashboard():
     env = st.sidebar.multiselect("Environment", ["Production", "Staging", "Development"])
     sev = st.sidebar.multiselect("Severity", ["Critical", "High", "Medium", "Low"])
     strat = st.sidebar.selectbox("Deduplication Strategy", ["Component-based", "Title-based", "CVE-based", "Custom"])
+    show_cve_links = st.sidebar.checkbox("Render CVE Links", value=False)
 
     filters = {}
     if env: filters["environmentName"] = env
     if sev: filters["severity"] = sev
 
-    if "findings_data" not in st.session_state:
+    # 🔄 Manual trigger for fetching
+    if st.sidebar.button("🔄 Load Findings"):
         st.session_state["findings_data"] = fetch_all_findings_sync(filters)
         st.session_state["page"] = 0
 
-    findings = st.session_state["findings_data"]
+    findings = st.session_state.get("findings_data", [])
     if not findings:
-        st.warning("No findings found.")
+        st.info("🔍 Click 'Load Findings' to begin.")
         return
 
+    # Deduplicate and Grouping
     deduped = deduplicate_findings(findings, strat)
     sla_violations = [f for f in findings if f.get("slaBreached")]
-    grouped_df = group_by_fields(findings, ["product", "subProduct", "componentName"])
+    grouped_df = pd.DataFrame(findings).groupby(["product", "subProduct", "componentName"]).size().reset_index(name="count")
 
-    tabs = st.tabs(["📋 All Findings", "🧹 Deduplicated", "⏰ SLA Breached", "📊 Summary", "📦 Grouped Findings"])
+    # Tabs
+    tabs = st.tabs(["📋 All", "🧹 Deduplicated", "⏰ SLA Breached", "📊 Summary", "📦 Grouped", "🔍 Fuzzy Groups"])
     tab_labels = ["All", "Deduplicated", "SLA"]
 
     for tab, data, label in zip(tabs[:3], [findings, deduped, sla_violations], tab_labels):
         with tab:
-            view, page, pages = paginate(data)
+            view, page, pages = paginate(data, size=50)
             df = pd.DataFrame(view)
-            if "cve" in df.columns: df["cve"] = df["cve"].apply(render_cve)
-            if "severity" in df.columns:
-                st.dataframe(df.style.map(color_severity, subset=["severity"]), use_container_width=True)
-            else:
-                st.dataframe(df, use_container_width=True)
+            if "cve" in df.columns and show_cve_links:
+                df["cve"] = df["cve"].apply(render_cve)
+            st.dataframe(df.style.map(color_severity, subset=["severity"]) if "severity" in df else df,
+                         use_container_width=True)
+
             col1, col2, col3 = st.columns([1, 2, 1])
             with col1:
                 if st.button(f"⬅️ Prev ({label})") and page > 0:
@@ -175,27 +206,36 @@ def run_dashboard():
                     st.session_state.page += 1
                     st.rerun()
 
+    # 📊 Summary
     with tabs[3]:
         st.subheader("Findings by Source")
         counts = Counter(f.get("source", "Unknown") for f in findings)
         fig, ax = plt.subplots()
         ax.bar(counts.keys(), counts.values())
-        ax.set_title("Findings by Source")
         plt.xticks(rotation=45)
         st.pyplot(fig)
 
+    # 📦 Grouped
     with tabs[4]:
         st.subheader("Grouped Findings (Product > SubProduct > Component)")
         st.dataframe(grouped_df, use_container_width=True)
 
-    # Export Excel
-    st.markdown("### 📥 Export")
+    # 🔍 Fuzzy Grouped (Lazy eval)
+    with tabs[5]:
+        st.subheader("🔍 Fuzzy Grouped Findings")
+        with st.spinner("Clustering similar findings..."):
+            fuzzy_df = fuzzy_group_findings(findings)
+            st.dataframe(fuzzy_df, use_container_width=True)
+
+    # 📥 Export
+    st.markdown("### 📥 Export to Excel")
     excel_buf = BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         pd.DataFrame(findings).to_excel(writer, sheet_name="All Findings", index=False)
         pd.DataFrame(deduped).to_excel(writer, sheet_name="Deduplicated", index=False)
         pd.DataFrame(sla_violations).to_excel(writer, sheet_name="SLA Breached", index=False)
         grouped_df.to_excel(writer, sheet_name="Grouped Findings", index=False)
+        fuzzy_df.to_excel(writer, sheet_name="Fuzzy Groups", index=False)
     st.download_button("📤 Download Excel", excel_buf.getvalue(), file_name="armorcode_dashboard_export.xlsx")
 
 # --- Entry ---

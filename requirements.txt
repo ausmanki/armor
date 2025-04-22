@@ -1,10 +1,7 @@
-streamlit
-aiohttp
-sentence-transformers
-torch
-numpy
-scikit-learn
-faiss-cpu
-pandas
-nest_asyncio
-async-timeout
+streamlit>=1.28.0
+aiohttp>=3.8.0
+pandas>=1.5.0
+matplotlib>=3.6.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.12.2
+openpyxl>=3.1.0

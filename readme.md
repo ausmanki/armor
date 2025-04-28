@@ -1,4 +1,6 @@
 🛡️ ArmorCode Findings Dashboard
+
+
 A Streamlit-based interactive dashboard for viewing, filtering, deduplicating, and exporting findings from ArmorCode via API.
 It supports async fetching, fuzzy clustering, grouping, CVE linking, and Excel export.
 
